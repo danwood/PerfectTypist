@@ -20,7 +20,9 @@ struct ConfigurationView: View {
     @ObservedObject var screenRecorder: ScreenRecorder
     @Binding var userStopped: Bool
     @State var showPickerSettingsView = false
-    
+	
+    let fpsValues: [Double] = [15, 29.97, 30, 60, 120]
+
     var body: some View {
         VStack {
             Form {
@@ -57,9 +59,35 @@ struct ConfigurationView: View {
                                         .tag(SCWindow?.some(window))
                                 }
                             }
-                        }
+							.onAppear {
+								DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {               // quick and dirty delay
+									for window in screenRecorder.availableWindows {
+										if window.displayName.hasPrefix("TextEdit") {
+											screenRecorder.selectedWindow = window
+											break
+										}
+									}
+								}
+							}
+						}
                     }
-                }
+                    
+                    HStack {
+                        Text("FPS")
+                        Picker("Frames per second", selection: $screenRecorder.framesPerSecond) {
+                            ForEach(fpsValues, id: \.self) {
+                                Text($0.formatted())
+                            }
+                        }
+                        .pickerStyle(DefaultPickerStyle())
+                    }
+ 
+					HStack {
+						Stepper("", value: $screenRecorder.bufferInSeconds,
+								in: 4...30, step: 1)
+						Text("Buffer size: \(screenRecorder.bufferInSeconds.formatted()) seconds")
+					}
+				}
                 .labelsHidden()
                 
                 Toggle("Exclude sample app from stream", isOn: $screenRecorder.isAppExcluded)
@@ -96,7 +124,7 @@ struct ConfigurationView: View {
                 // Picker section.
                 Spacer()
                     .frame(height: 20)
-                
+/*
                 HeaderView("Content Picker")
                 Toggle("Activate Picker", isOn: $screenRecorder.isPickerActive)
                 Group {
@@ -114,6 +142,7 @@ struct ConfigurationView: View {
                     }
                 }
                 .disabled(!screenRecorder.isPickerActive)
+ */
             }
             .padding()
             

@@ -1,270 +1,111 @@
-# Capturing screen content in macOS
-Stream desktop content like displays, apps, and windows by adopting screen capture in your app.
+# PerfectTypist: An algorithm to seemingly eliminate typing mistakes when making a screen recording
 
-## Overview
-This sample shows how to add high-performance screen capture to your Mac app by using [`ScreenCaptureKit`][1]. The sample explores how to create content filters to capture the displays, apps, and windows you choose. It then shows how to configure your stream output, retrieve video frames and audio samples, and update a running stream.
+![Example of PerfectTypist in action](images-for-readme/perfect-typist-demo.gif)
 
-- Note: This sample code project is associated with WWDC22 [Session 10156: Meet ScreenCaptureKit](https://developer.apple.com/wwdc22/10156) and [Session 10155: Take ScreenCaptureKit to the next level](https://developer.apple.com/wwdc22/10155)
+> [!NOTE]
+> This README is based on article originally published at [https://www.linkedin.com/pulse/perfecttypist-algorithm-seemingly-eliminate-typing-mistakes-dan-wood-zghqc/](https://www.linkedin.com/pulse/perfecttypist-algorithm-seemingly-eliminate-typing-mistakes-dan-wood-zghqc/).
 
-## Configure the sample code project
-To run this sample app, you need the following:
+Pre-pandemic, as I was going through the fabulous "[100 Days of SwiftUI](https://www.hackingwithswift.com/100/swiftui)" course and other Hacking with Swift videos, I noticed that their creator seemed to be an excellent typist, seemingly never making mistakes. When _I_ record myself typing, I seem to make more typing errors than usual! I realized that you could simply edit your video after it's recorded to cut out the mistakes. But maybe not so simply, because if you were talking while typing, you'd mess up the timing. And even if you didn't worry about the timing, it would still be extremely tedious to go through even a few minutes of video to clean up!
 
-- A Mac with macOS 13 beta or later
-- Xcode 14 beta or later
+Why not take advantage of the computer, then, to clean up your video, as you were recording it? If there was a way that hitting backspace could signal the video recording software that a mistake had been made, perhaps it could "back up" the recording to just before the incorrect keystroke was hit!
 
-The first time you run this sample, the system prompts you to grant the app screen recording permission. After you grant permission, restart the app to enable capture. 
+I built a very rough prototype of my idea, but I didn't get very far for two reasons: First, I didn't have the time to build an entire screen-recording application. Second, the screen-recording API we had at the time wasn't particularly full-featured or enjoyable to use.
 
-## Create a content filter
-Displays, running apps, and windows are the shareable content on a device. The sample uses the [`SCShareableContent`][2] class to retrieve these items in the form of [`SCDisplay`][3], [`SCRunningApplication`][4], and [`SCWindow`][5] instances, respectively.
+Apple's newish [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit/) makes it a lot easier to record from the screen, so I decided to resurrect my old idea and rewrite it using this newer API.  I still don't have any plans on building this out into a full-fledged screen-recording app, but maybe some of the existing apps in this space (e.g. [ScreenStudio](https://www.screen.studio/), [ScreenFlow](https://www.telestream.net/screenflow/overview.htm), [Loom](https://www.loom.com/lp/mac-screen-recorder-lp)) will incorporate this algorithm into their offerings. I invite their developers to incorporate this as a feature; I think their users would be very happy to have their typing appear to improve!
 
-``` swift
-// Retrieve the available screen content to capture.
-let availableContent = try await SCShareableContent.excludingDesktopWindows(false,
-                                                                            onScreenWindowsOnly: true)
-```
-[View in Source][6]
+As a starting point for my code, I used the Apple sample code "Capturing screen content in macOS." Apple recently updated [its page containing the code](https://developer.apple.com/documentation/screencapturekit/capturing_screen_content_in_macos) to require macOS 15 since it incorporates new WWDC24 APIs (microphone input, HDR, etc.). At some point, I may update my code to reflect that sample code, but for now, it's based on the 2023 version of the code, which only requires macOS 13.
 
-Before the sample begins capture, it creates an [`SCContentFilter`][7] object to specify the content to capture. The sample provides two options that allow for capturing either a single window or an entire display. When the capture type is set to capture a window, the app creates a content filter that only includes that window. 
+Please note that this is still a prototype, just doing the bare minimum to implement the algorithm; it's still clearly a "sample code" application. It doesn't produce the best video quality - it's highly compressed. Some fine-tuning should be easy to do based on what kind of recording is desired.
 
-``` swift
-// Create a content filter that includes a single window.
-filter = SCContentFilter(desktopIndependentWindow: window)
-```
-[View in Source][8]
+The Algorithm
+-------------
 
-When a user specifies to capture the entire display, the sample creates a filter to capture only content from the main display. To illustrate filtering a running app, the sample contains a toggle to specify whether to exclude the sample app from the stream.
+A foundation upon which most of this code is based can be found in a 2018 technical blog post from GIPHY, [Doing it Live at GIPHY (with AVFoundation)](https://engineering.giphy.com/doing-it-live-at-giphy-with-avfoundation/). This article describes their use of a circular buffer to hold the last 30 seconds of frames that their code captures, and a technique for using the Video Toolbox framework to compress the frames. Understanding this technique is essential to understanding the rest of the algorithm.
 
-``` swift
-var excludedApps = [SCRunningApplication]()
-// If a user chooses to exclude the app from the stream,
-// exclude it by matching its bundle identifier.
-if isAppExcluded {
-    excludedApps = availableApps.filter { app in
-        Bundle.main.bundleIdentifier == app.bundleIdentifier
-    }
-}
-// Create a content filter with excluded apps.
-filter = SCContentFilter(display: display,
-                         excludingApplications: excludedApps,
-                         exceptingWindows: [])
-```
-[View in Source][9]
+Instead of capturing frames from the screen and directly writing them to disk, the `ScreenRecorder` spools each frame as it arrives into a `CircularBuffer`. Only when the buffer is full and the oldest frames are displaced — or at the end, when recording is done and the buffer needs to be flushed out — are the frames written to the disk.
 
-## Create a stream configuration
-An [`SCStreamConfiguration`][10] object provides properties to configure the stream’s output size, pixel format, audio capture settings, and more. The app’s configuration throttles frame updates to 60 fps and queues five frames. Specifying more frames uses more memory, but may allow for processing frame data without stalling the display stream. The default value is three frames and shouldn't exceed eight.
+When the screen recording is going on, individual frames are recorded from the screen and added to the circular buffer. Shortly after each keystroke, a new letter will appear on the screen, which will mean a new unique frame to be recorded. Other updates to the screen (a popup, movement of the cursor, etc.) may also add additional frames to the buffer.
 
-``` swift
-let streamConfig = SCStreamConfiguration()
+This timeline, for instance, shows what might happen if somebody tries to type "hello" and makes a mistake that requires backspacing and re-typing the correct letter. A yellow box indicates what text is showing. (Empty yellow boxes represent the same text but slightly different frame content.)
 
-// Configure audio capture.
-streamConfig.capturesAudio = isAudioCaptureEnabled
-streamConfig.excludesCurrentProcessAudio = isAppAudioExcluded
+![Diagram of buffer filling up with "HELLO" including typing mistake](images-for-readme/1.png)
 
-// Configure the display content width and height.
-if captureType == .display, let display = selectedDisplay {
-    streamConfig.width = display.width * scaleFactor
-    streamConfig.height = display.height * scaleFactor
-}
+Where the real "magic" happens, though, is that our `KeyboardMonitor` class is paying attention to keystrokes, recording when each keystroke is hit and what video frame that corresponds to.
 
-// Configure the window content width and height.
-if captureType == .window, let window = selectedWindow {
-    streamConfig.width = Int(window.frame.width) * 2
-    streamConfig.height = Int(window.frame.height) * 2
-}
+So when the backspace is hit, the keyboard monitor performs surgery on the circular buffer, wiping out the last frame or frames starting at the moment that the keystroke before the backspace was hit.
 
-// Set the capture interval at 60 fps.
-streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+![Diagram of buffer removing frame with incorrect character when backspace is pressed](images-for-readme/2.png)
 
-// Increase the depth of the frame queue to ensure high fps at the expense of increasing
-// the memory footprint of WindowServer.
-streamConfig.queueDepth = 5
-```
-[View in Source][11] 
+When the next (non-backspace) key is pressed, the sample is added to the buffer, at the timestamp that the new keystroke took place. This has the effect of extending that last pre-mistake sample to fill the gap.  So it's as if the mistake never happened!
 
-## Start the capture session
-The sample uses the content filter and stream configuration to initialize a new instance of `SCStream`. To retrieve audio and video sample data, the app adds stream outputs that capture media of the specified type. When the stream captures new sample buffers, it delivers them to its stream output object on the indicated dispatch queues.
+![Diagram of buffer removing extending frame with correct character after the replacement character is typed](images-for-readme/3.png)
 
-``` swift
-stream = SCStream(filter: filter, configuration: configuration, delegate: streamOutput)
+The typing then continues and it's as if there was a brief pause in the typing, rather than a mistake.
 
-// Add a stream output to capture screen content.
-try stream?.addStreamOutput(streamOutput, type: .screen, sampleHandlerQueue: videoSampleBufferQueue)
-try stream?.addStreamOutput(streamOutput, type: .audio, sampleHandlerQueue: audioSampleBufferQueue)
-stream?.startCapture()
-```
-[View in Source][12]
+![Diagram of buffer after "HELLO" is typed with mistake, as if there was no mistake](images-for-readme/4.png)
 
-After the stream starts, further changes to its configuration and content filter don’t require restarting it. Instead, after you update the capture configuration in the user interface, the sample creates new stream configuration and content filter objects and applies them to the running stream to update its state.
-``` swift
-try await stream?.updateConfiguration(configuration)
-try await stream?.updateContentFilter(filter)
-```
-[View in Source][13]
+This technique works well for multiple backspaces! Each backspace just goes back to erase one more mistake. Subject to the capacity of the circular buffer, of course.
 
-## Process the output
-When a stream captures a new audio or video sample buffer, it calls the stream output’s [stream(\_:didOutputSampleBuffer:of:)][14] method, passing it the captured data and an indicator of its type. The stream output evaluates and processes the sample buffer as shown below.
-``` swift
-func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
-    
-    // Return early if the sample buffer is invalid.
-    guard sampleBuffer.isValid else { return }
-    
-    // Determine which type of data the sample buffer contains.
-    switch outputType {
-    case .screen:
-        // Create a CapturedFrame structure for a video sample buffer.
-        guard let frame = createFrame(for: sampleBuffer) else { return }
-        capturedFrameHandler?(frame)
-    case .audio:
-        // Process audio as an AVAudioPCMBuffer for level calculation.
-        handleAudio(for: sampleBuffer)
-    @unknown default:
-        fatalError("Encountered unknown stream output type: \(outputType)")
-    }
-}
-```
-[View in Source][27]
+![Several diagrams of buffer after "WORLD" is typed with two typing mistakes and backspace hit twice](images-for-readme/5.png)
 
-## Process a video sample buffer
-If the sample buffer contains video data, it retrieves the sample buffer attachments that describe the output video frame.  
+Limitations and possible improvements
+-------------------------------------
 
-``` swift
-// Retrieve the array of metadata attachments from the sample buffer.
-guard let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer,
-                                                                     createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-      let attachments = attachmentsArray.first else { return nil }
-```
-[View in Source][15]
+This usually ends up looking pretty good. And if the user is talking, there is no synchronization problem because the audio and video timelines do not get adjusted.
 
-An [`SCStreamFrameInfo`][16] structure defines dictionary keys that the sample uses to retrieve metadata attached to a sample buffer. Metadata includes information about the frame's display time, scale factor, status, and more. To determine whether a frame is available for processing, the sample inspects the status for [`SCFrameStatus.complete`][17].
+I can envision some situations where this technique is a bit problematic, though. For instance, if you are capturing your typing while an animation is happening in the same window, then that animation would appear to freeze during those moments when the frames are being adjusted. Or if you have a noisy keyboard like the [Tactile Pro](http://matias.ca/tactilepro4/) and your microphone is picking up your typing sounds, it might seem a little strange to hear key clicks when there aren't corresponding characters appearing on screen.
 
-``` swift
-// Validate the status of the frame. If it isn't `.complete`, return nil.
-guard let statusRawValue = attachments[SCStreamFrameInfo.status] as? Int,
-      let status = SCFrameStatus(rawValue: statusRawValue),
-      status == .complete else { return nil }
-```
-[View in Source][18]
+A possible improvement might be to monitor the audio that is coming in with the video. If it doesn't appear that the narrator is talking during typing, the buffer might be adjusted to give the illusion that less time passed while the mistake was corrected. The same kind of analysis could be used to automatically speed up all typing frames, so it appears that the typing happens with super speed and super accuracy.
 
-The sample buffer wraps a [`CVPixelBuffer`][19] that’s backed by an [`IOSurface`][20]. The sample casts the surface reference to an `IOSurface` that it later sets as the layer content of an [`NSView`][21].
+The Code
+--------
 
-``` swift
-// Get the pixel buffer that contains the image data.
-guard let pixelBuffer = sampleBuffer.imageBuffer else { return nil }
+I've flattened the repository so it's easy to see what changes I made from Apple's sample code. The first check-in is the sample code; the second check-in is where I changed all of the names from 'CaptureSample' to 'PerfectTypist'; on top of that are the changes that implement the new capturing algorithm.
 
-// Get the backing IOSurface.
-guard let surfaceRef = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else { return nil }
-let surface = unsafeBitCast(surfaceRef, to: IOSurface.self)
+### New Files
 
-// Retrieve the content rectangle, scale, and scale factor.
-guard let contentRectDict = attachments[.contentRect],
-      let contentRect = CGRect(dictionaryRepresentation: contentRectDict as! CFDictionary),
-      let contentScale = attachments[.contentScale] as? CGFloat,
-      let scaleFactor = attachments[.scaleFactor] as? CGFloat else { return nil }
+`CircularBuffer`
 
-// Create a new frame with the relevant data.
-let frame = CapturedFrame(surface: surface,
-                          contentRect: contentRect,
-                          contentScale: contentScale,
-                          scaleFactor: scaleFactor)
-```
-[View in Source][22]
+Based on the [Giphy article](https://engineering.giphy.com/doing-it-live-at-giphy-with-avfoundation/). They define a circular buffer so we can always have the last N seconds of captured frames available.  This template class `CircularBuffer<T>` is the basis.
 
-## Process an audio sample buffer
+`KeyboardMonitor`
 
-If the sample buffer contains audio, it processes the data as an [AudioBufferList][23] as shown below.  
+Not surprisingly, the purpose of this class is to monitor the keyboard.  It is passed in a `CircularBuffer` and a `VTCompressionSession`; as keys are pressed, it adjusts the circular buffer and possibly backs up the session.
 
-``` swift
-private func handleAudio(for buffer: CMSampleBuffer) -> Void? {
-    // Create an AVAudioPCMBuffer from an audio sample buffer.
-    try? buffer.withAudioBufferList { audioBufferList, blockBuffer in
-        guard let description = buffer.formatDescription?.audioStreamBasicDescription,
-              let format = AVAudioFormat(standardFormatWithSampleRate: description.mSampleRate, channels: description.mChannelsPerFrame),
-              let samples = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: audioBufferList.unsafePointer)
-        else { return }
-        pcmBufferHandler?(samples)
-    }
-}
-```
-[View in Source][24]
+`VideoToolboxPlus`
 
-The app retrieves the audio stream basic description that it uses to create an [AVAudioFormat][25]. It then uses the format and the audio buffer list to create a new instance of [AVAudioPCMBuffer][26]. If you enable audio capture in the user interface, the sample uses the buffer to calculate average levels for the captured audio to display in a simple level meter.
+Some video utilities from John Manos. \[[Source](https://github.com/jmmanos/VideoToolboxPlus/blob/master/VideoToolboxPlus.swift)\] Updated for newer Swift compatibility. Extensions on `VTCompressionSession` and `CMSampleBuffer`.
 
-- Important: When calling methods like [`withAudioBufferList(blockBufferMemoryAllocator:flags:body:)`][28], letting an instance of an `Unsafe` type or the pointer it refers to escape the closure can cause undefined behavior. For more unformation on working with unsafe instances in Swift, see [UnsafePointer][29] and [WWDC20 - 10648: Unsafe Swift][30].
+### Changed Files
 
-## Manage capture with the screen capture picker
+`ScreenRecorder`
 
-MacOS can manage a capture filter directly through [`SCContentSharingPicker.shared`][31]. Selecting the Activate Picker toggle in the app sets the `ScreenRecorder.isPickerActive` property.
+*   Manages an `AVAssetWriter` and `AVAssetWriterInput` for writing the captured video
+*   Manages a `KeyboardMonitor` and `CircularBuffer<CMSampleBuffer>` for managing the keystrokes and buffering the captured frames
+*   Manages a `VTCompressionSession` to compress the frames that get buffered
+*   `start()` function sets up the compression session, the circular buffer, and the keyboard monitor.  With each frame received, it compresses the image and adds to the circular buffer. If a frame was displaced from the circular buffer, it's written to the output file.
+*   `stop()` function cleans up the compression session, keyboard monitor, and circular buffer
+*   minor changes to `streamConfiguration`, `filterWindows()`
+*   Several new methods for writing frames to the output file
+*   Utility method `flush()` extending `VTCompressionSession`
 
-``` swift
-@Published var isPickerActive = false {
-    didSet {
-        if isPickerActive {
-            logger.info("Picker is active")
-            self.initializePickerConfiguration()
-            self.screenRecorderPicker.isActive = true
-            self.screenRecorderPicker.add(self)
-        } else {
-            logger.info("Picker is inactive")
-            self.screenRecorderPicker.isActive = false
-            self.screenRecorderPicker.remove(self)
-        }
-    }
-}
-```
-[View in Source][32]
+`CaptureEngine`
 
-In order to get messages from the system picker, the `ScreenRecorder` class conforms to [`SCContentSharingPickerObserver`][33] and is added as an observer for the shared content picker. When the app user changes their streaming source through the picker, or ends streaming, the app handles it in the following code.
+*   `CapturedFrame` struct adds a `CMSampleBuffer` and a timestamp, `displayTime`.  Removes `invalid` since it's not used.
+*   `func createFrame(for sampleBuffer: CMSampleBuffer)` gets the timestamp from `attachments\[.displayTime\]` and builds a `CapturedFrame` with that additional metadata, and the given sample buffer.
 
-``` swift
-nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
-    logger.info("Picker canceled for stream \(stream)")
-}
+`ContentView`
 
-nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) {
-    Task { @MainActor in
-        logger.info("Picker updated with filter=\(filter) for stream=\(stream)")
-        pickerContentFilter = filter
-        shouldUsePickerFilter = true
-        setPickerUpdate(true)
-        updateEngine()
-    }
-}
-```
-[View in Source][34]
+*   renamed `isUnauthorized` to `isScreenRecordingUnauthorized` (for clarification) and added `isKeyCaptureUnauthorized` since we now have to deal with two permissions
+*   Replaced contents of `.overlay` section for authorization to handle screen recording and accessibility permissions. Added some markdown to navigate to the appropriate system settings.
+*   To the `Task` in the `.onAppear` for the view:
+  *   Insert explicit calling of `await screenRecorder.monitorAvailableContent()` rather than invoking this in the call to `start()` since we are no longer starting capture automatically
+  *   initialize `isKeyCaptureUnauthorized` from the accessibility framework
+  *   Do not call `await screenRecorder.start()` automatically.
 
-[1]:	https://developer.apple.com/documentation/screencapturekit
-[2]:	https://developer.apple.com/documentation/screencapturekit/scshareablecontent
-[3]:	https://developer.apple.com/documentation/screencapturekit/scdisplay
-[4]:	https://developer.apple.com/documentation/screencapturekit/scrunningapplication
-[5]:	https://developer.apple.com/documentation/screencapturekit/scwindow
-[6]:	x-source-tag://GetAvailableContent
-[7]:	https://developer.apple.com/documentation/screencapturekit/sccontentfilter
-[8]:	x-source-tag://UpdateFilter
-[9]:	x-source-tag://UpdateFilter
-[10]:	https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration
-[11]:	x-source-tag://CreateStreamConfiguration
-[12]:	x-source-tag://StartCapture
-[13]:	x-source-tag://UpdateStreamConfiguration
-[14]:	https://developer.apple.com/documentation/screencapturekit/scstreamoutput/3928182-stream
-[15]:	x-source-tag://DidOutputSampleBuffer
-[16]:	https://developer.apple.com/documentation/screencapturekit/scstreamframeinfo
-[17]:	https://developer.apple.com/documentation/screencapturekit/scframestatus/complete
-[18]:	x-source-tag://DidOutputSampleBuffer
-[19]:	https://developer.apple.com/documentation/corevideo/cvpixelbuffer-q2e
-[20]:	https://developer.apple.com/documentation/iosurface
-[21]:	https://developer.apple.com/documentation/appkit/nsview
-[22]:	x-source-tag://DidOutputSampleBuffer
-[23]:	https://developer.apple.com/documentation/coreaudiotypes/audiobufferlist
-[24]:	x-source-tag://ProcessAudioSampleBuffer
-[25]:	https://developer.apple.com/documentation/avfaudio/avaudioformat
-[26]:	https://developer.apple.com/documentation/avfaudio/avaudiopcmbuffer
-[27]:   x-source-tag://DidOutputSampleBuffer
-[28]:   https://developer.apple.com/documentation/coremedia/cmsamplebuffer/3242577-withaudiobufferlist
-[29]:   https://developer.apple.com/documentation/swift/unsafepointer
-[30]:   https://developer.apple.com/videos/play/wwdc2020/10648
-[31]:   https://developer.apple.com/documentation/screencapturekit/sccontentsharingpicker/4161033-shared
-[32]:   x-source-tag://TogglePicker
-[33]:   https://developer.apple.com/documentation/screencapturekit/sccontentsharingpickerobserver
+`Views/ConfigurationView`
 
-[34]:   x-source-tag://HandlePicker
+*   `.onAppear` method to automatically pick TextEdit; useful for demos and testing
+*   FPS `Picker` using preset values declared in `fpsValues`
+*   `Stepper` to choose buffer size, in seconds
+*   Comment out the Content Picker - not working for me and not relevant to my sample

@@ -9,6 +9,52 @@ import ScreenCaptureKit
 import Combine
 import OSLog
 import SwiftUI
+import AVFoundation
+import VideoToolbox
+
+/* 
+ 
+ doc:
+ https://developer.apple.com/documentation/videotoolbox?language=objc
+ 
+ https://developer.apple.com/videos/play/wwdc2014/513/
+ 
+ CVPixelBuffer - uncompressed pixel data with info about what it is
+ CVPixelBufferPool to be able to allocate/deallocate easily
+ pixelBufferAttributes is dictionary of useful info like with/height and format
+ CMBlockBuffer wraps various raw data
+ CMSampleBuffer is compressed video frame (holding CMBlockBuffer) OR uncompressed raster image (holding CMPixelBuffer)
+ CMClockGetHostTimeClock() wrapper around mach_absolute_time
+ CMTimeBase is more controlled access to clock
+ 
+ Compressing Video into a file: Sequence of CVPixelBuffers, goes into AVAssetWriter has a video encoder which puts the frames into CMSampleBuffers.
+ AVAssetWriter:
+ WWDC 2013 -Moving to AVKit and AVFoundation
+ WWDC 2011 -Working with Media in AVFoundation
+ 
+ But if you want direct access to those compressed sample buffers …
+ So you get the video encoder via a VTCompressionSession, which returns CMSampleBuffers.
+ You'll need dimension, what format (…CodecType_H264), optionally PixelBufferAttributes describing source, VTCompressionOutputCallback (Modern equivalent?)
+ After creating the VTCompressionSession you need to configure it. Using VTSessionSetProperty() calls, like _AllowFrameReordering, averageBitRate,
+ entropyMode, RealTime to tell encoder this is realtime data, ProFileLevel - ??? 
+ Feeding VTCompressionSession: use VTCompressionSessionEncodeFrame with CVPixelBuffers with their presentationTime
+ Then use VTCompressionSessionCompleteFrames() to finish pending frames, to have it emit all the frames it's received so far
+ VTCompressionSessionOutputCallback to receive output CMSampleBuffer, error codes, dropped frames . Frames emitted in decodeOrder - is this significant? 
+ 
+ WWDC session then talks about conversing H264 sample buffers to elementary streams for going to the network. Is this relevant? Or how to we then go to a file after we've processed things?
+ 
+ Then it talks about multi-pass encoding. Maybe we could encode at a high quality, high bit rate for our buffer, but then later on, at the end of
+ the recording, re-encode for a better bit rate?
+ Maybe look at this later. We get into the details at about 39 minutes into WWDC 2014 #513
+ AVAssetReader, AVAssetWriter
+ Then again, multi-pass is best for varying complexity source material, and a screencast with you typing is not going to be that varying.
+ 
+ 
+ Of interest:
+ 
+ VTCompressionSessionGetPixelBufferPool
+ 
+ */
 
 /// A provider of audio levels from the captured samples.
 class AudioLevelsProvider: ObservableObject {
@@ -19,6 +65,15 @@ class AudioLevelsProvider: ObservableObject {
 class ScreenRecorder: NSObject,
                       ObservableObject,
                       SCContentSharingPickerObserver {
+    private var assetWriter: AVAssetWriter?
+    private var assetWriterInput: AVAssetWriterInput?
+    private var hasSession = false
+    
+    private var keyboardMonitor: KeyboardMonitor?
+    private var circularBuffer: CircularBuffer<CMSampleBuffer>?   // allocated when we start capturing
+
+    var compressionSession: VTCompressionSession?
+    
     /// The supported capture types.
     enum CaptureType {
         case display
@@ -28,6 +83,10 @@ class ScreenRecorder: NSObject,
     private let logger = Logger()
     
     @Published var isRunning = false
+    var bufferInSeconds: Double = 10.0
+    
+    var frameInterval: CMTime { CMTime(value: 1, timescale: CMTimeScale(framesPerSecond)) }
+    var framesPerSecond: Double = 60.0
     
     // MARK: - Video Properties
     @Published var captureType: CaptureType = .display {
@@ -114,7 +173,7 @@ class ScreenRecorder: NSObject,
     
     // The object that manages the SCStream.
     private let captureEngine = CaptureEngine()
-    
+        
     private var isSetup = false
     
     // Combine subscribers.
@@ -133,7 +192,6 @@ class ScreenRecorder: NSObject,
     }
     
     func monitorAvailableContent() async {
-        guard !isSetup || !isPickerActive else { return }
         // Refresh the lists of capturable content.
         await self.refreshAvailableContent()
         Timer.publish(every: 3, on: .main, in: .common).autoconnect().sink { [weak self] _ in
@@ -163,6 +221,35 @@ class ScreenRecorder: NSObject,
         
         do {
             let config = streamConfiguration
+
+            /// initialize our VTCompressionSession with H264 as our desired codec.
+            /// You can also use VTSessionSetProperty()to specify additional encoding settings (bitrate, framerate, pixel formats, etc.).
+
+            compressionSession = VTCompressionSession.new(width: Int32(config.width),
+                                                                    height: Int32(config.height),
+                                                                    codec: kCMVideoCodecType_H264,
+                                                                    callback: nil) 
+            guard let compressionSession else {
+                fatalError("can't create session")
+            }
+            compressionSession.isRealtime = true
+            compressionSession.profile = kVTProfileLevel_H264_High_AutoLevel // ???
+            compressionSession.averageBitrate = 4000            // Just spitballing. Make this a user input?
+            compressionSession.maxKeyframeIntervalDuration = 0 // No limit. Not sure if I want to specify.
+            compressionSession.isRealtime = true    // we are compressing in real time, not necessarily writing to file in real time (at first)
+            compressionSession.prepare()
+                        
+            let numberOfSamplesInBuffer: Int = Int(bufferInSeconds * Double(frameInterval.timescale) / Double(frameInterval.value))
+            self.circularBuffer = CircularBuffer<CMSampleBuffer>(capacity: numberOfSamplesInBuffer)
+            guard let circularBuffer else { 
+                print("No circular buffer")
+                return
+            }
+            keyboardMonitor = KeyboardMonitor(circularBuffer: circularBuffer, compressionSession: compressionSession)
+            
+            beginWriting(width: config.width, height: config.height) // already has scale factor baked into dimensions from config
+            keyboardMonitor?.activateMonitor(true)
+            
             let filter = contentFilter
             // Update the running state.
             isRunning = true
@@ -170,6 +257,26 @@ class ScreenRecorder: NSObject,
             // Start the stream and await new video frames.
             for try await frame in captureEngine.startCapture(configuration: config, filter: filter) {
                 capturePreview.updateFrame(frame)
+                
+                let sampleBuffer: CMSampleBuffer = frame.sampleBuffer
+                guard let image: CVImageBuffer = sampleBuffer.imageBuffer else { throw VideoToolboxError.errorCreatingImageBuffer }
+                let sampleDuration: CMTime = sampleBuffer.duration
+                let duration: CMTime = sampleDuration // .value > 0 ? sampleDuration : frameInterval // don't use CMTimeMaximum - 0 is the maximum????
+                try compressionSession.encode(imageBuffer: image,
+                                               presentationTimestamp: sampleBuffer.presentationTimeStamp,
+                                               duration: duration) { [weak self] (status: OSStatus, infoFlags: VTEncodeInfoFlags, encodedSampleBuffer: CMSampleBuffer?) in // VTCompressionOutputHandler
+                    if let self, let encodedSampleBuffer, let circularBuffer = self.circularBuffer {
+                        // print("🦋 Writing sampleBuffer to circularBuffer index \(circularBuffer.writeIndex), its timestamp = \(encodedSampleBuffer.presentationTime)")
+                        let displacedSampleBuffer: CMSampleBuffer? = circularBuffer.write(encodedSampleBuffer)
+                        if let displacedSampleBuffer {
+                            print("👻 Displaced buffer @ \(displacedSampleBuffer.presentationTime)")
+                            self.writeToFile(sampleBuffer: displacedSampleBuffer)
+                        }
+                    } else {
+                        print("no encodedSampleBuffer to encode")
+                    }
+                }
+
                 if contentSize != frame.size {
                     // Update the content size if it changed.
                     contentSize = frame.size
@@ -188,6 +295,18 @@ class ScreenRecorder: NSObject,
         await captureEngine.stopCapture()
         stopAudioMetering()
         isRunning = false
+        
+        if let compressionSession {
+            VTCompressionSessionInvalidate(compressionSession)
+            compressionSession.flush()
+            self.compressionSession = nil
+        }
+        
+        keyboardMonitor?.activateMonitor(false)
+        guard let circularBuffer else { return }
+        let samples: [CMSampleBuffer] = circularBuffer.readAll()
+        circularBuffer.finishWriting()
+        writeRemaining(samples: samples)
     }
     
     private func startAudioMetering() {
@@ -307,7 +426,7 @@ class ScreenRecorder: NSObject,
         return filter
     }
     
-    private var streamConfiguration: SCStreamConfiguration {
+    private lazy var streamConfiguration: SCStreamConfiguration = {
         
         let streamConfig = SCStreamConfiguration()
         
@@ -328,14 +447,14 @@ class ScreenRecorder: NSObject,
         }
         
         // Set the capture interval at 60 fps.
-        streamConfig.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        streamConfig.minimumFrameInterval = frameInterval
         
         // Increase the depth of the frame queue to ensure high fps at the expense of increasing
         // the memory footprint of WindowServer.
         streamConfig.queueDepth = 5
         
         return streamConfig
-    }
+    }()
     
     /// - Tag: GetAvailableContent
     private func refreshAvailableContent() async {
@@ -370,6 +489,8 @@ class ScreenRecorder: NSObject,
             .filter { $0.owningApplication != nil && $0.owningApplication?.applicationName != "" }
         // Remove this app's window from the list.
             .filter { $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier }
+        // Remove tiny windows like status items and such
+            .filter { $0.frame.width >= 100 && $0.frame.height >= 100 }
     }
 }
 
@@ -391,5 +512,132 @@ extension SCWindow {
 extension SCDisplay {
     var displayName: String {
         "Display: \(width) x \(height)"
+    }
+}
+
+extension ScreenRecorder {
+    // MARK: Writing
+    
+    private func beginWriting(width: Int, height: Int) {
+        let directory = FileManager.default.temporaryDirectory
+        let fileName = NSUUID().uuidString
+        let outputURL = directory.appendingPathComponent(fileName).appendingPathExtension("mov")
+        
+        assetWriter = try? AVAssetWriter(outputURL: outputURL, fileType: .mov) 
+        guard let assetWriter else {    // ^^ <<<  needs to be mov, not mp4 ???
+            print("couldn't make AVAssetWriter")
+            return
+        }
+        
+        // If you’re appending samples that are already in an acceptable compressed format, pass a value of nil for the output settings to pass
+        // the buffers to the output unaltered.
+        
+        assetWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
+        guard let assetWriterInput else { 
+            print("no assetWriterInput")
+            return
+        }
+        
+        /* "Apps that write media data from a real-time source, such as an instance of AVCaptureOutput, set the input’s expectsMediaDataInRealTime
+         property value to true so that the input accurately determines its readiness for more data. When expectsMediaDataInRealTime is true, this
+         property value becomes false only when the input can’t process media samples at the current data rate. If this property value becomes 
+         false for a real-time source, your app may need to reduce the rate at which it appends samples, or drop them altogether.
+         */
+        assetWriterInput.expectsMediaDataInRealTime = true
+        assetWriter.add(assetWriterInput)
+        assetWriter.startWriting()
+    }
+    
+    // Called after each append to sample buffer, but I don't like that since what if it's ALREADY trying to output?
+    
+    private func writeRemaining(samples: [CMSampleBuffer]) {
+        let bufferCount: Int = samples.count
+        print("\(#function) with \(samples.count) remaining samples")
+       guard bufferCount > 0 else {
+            print("\(#function) final buffer is empty already")
+            return 
+        }
+        guard let assetWriterInput else { 
+            print("\(#function) no assetWriterInput")
+            return 
+        }
+        // Note: can't reset assetWriterInput.expectsMediaDataInRealTime once it's been set
+
+        var bufferIndex = 0
+        let queue = DispatchQueue(label: "audio-write")
+        assetWriterInput.requestMediaDataWhenReady(on: queue) { [weak self] in
+            guard let self = self else { return }
+            while assetWriterInput.isReadyForMoreMediaData {
+                guard bufferIndex < bufferCount else {
+                    assetWriterInput.markAsFinished()
+                    
+                    self.assetWriter!.finishWriting() {      // wait until the writer above to really finish
+                        self.circularBuffer = nil
+                        self.hasSession = false
+                        print("output file: \(self.assetWriter!.outputURL)")
+                        NSWorkspace.shared.open(self.assetWriter!.outputURL)
+                    }
+                    break
+                }
+                let sampleBuffer: CMSampleBuffer = samples[bufferIndex]
+                self.startSessionIfNeeded(sample: sampleBuffer, isRealtime: false)  // If this is the first sample, no need to mark as real-time
+                assetWriterInput.append(sampleBuffer)
+                bufferIndex += 1
+            }
+        }
+    }
+    
+    private func startSessionIfNeeded(sample: CMSampleBuffer, isRealtime: Bool) {
+        guard !self.hasSession, let assetWriter, let assetWriterInput else { return }
+        
+        // Only set this to true now, since we didn't need to deal with real-time writing until the session is first started
+        if isRealtime {
+            assetWriterInput.expectsMediaDataInRealTime = true
+        }
+        
+        // the presentation timestamp (CMTime: "Rational time value") of the sample that will be presented first
+        assetWriter.startSession(atSourceTime: sample.presentationTimeStamp)
+        print("\(#function) at \(sample.presentationTime)")
+        self.hasSession = true
+    }
+    
+    // Same as writeToFile but with CMSampleBuffer.
+    
+    private func writeToFile(sampleBuffer: CMSampleBuffer) {
+        print("\(#function)")
+        self.startSessionIfNeeded(sample: sampleBuffer, isRealtime: true)   // If this is first session, this is real-time writing
+        if assetWriterInput!.isReadyForMoreMediaData {
+            assetWriterInput!.append(sampleBuffer)
+        } else {
+            print("🧛 Skipping frame because input is not ready - should not be happening with real-time!")
+        }
+    }
+  
+    
+    // NOT USED, but maybe we want it for directly writing to the file.
+    // this is where we feed the frames to AVAssetWriter which will save out the video to a file
+    private func writeToFile(frame: CapturedFrame) {
+        // print("\(#function)")
+        if !hasSession {
+            
+            // the presentation timestamp (CMTime: "Rational time value") of the sample that will be presented first
+            let timestamp: CMTime = frame.sampleBuffer.presentationTimeStamp
+            assetWriter!.startSession(atSourceTime: timestamp)
+            hasSession = true
+        }
+        
+        // TODO: update it to wait to be ready, rather than dropping frames?
+        
+        if assetWriterInput!.isReadyForMoreMediaData {
+            assetWriterInput!.append(frame.sampleBuffer)
+        } else {
+            print("🧛 Skipping frame because input is not ready - should not be happening with real-time!")
+        }
+    }
+}
+
+extension VTCompressionSession {
+    func flush(untilPresentationTimeStamp: CMTime = .invalid) {
+        VTCompressionSessionCompleteFrames(self, untilPresentationTimeStamp: untilPresentationTimeStamp)
     }
 }

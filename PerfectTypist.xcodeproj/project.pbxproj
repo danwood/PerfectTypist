@@ -21,13 +21,16 @@
 		C4B0DABF276BA4B50015082A /* CapturePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B0DABC276BA4B50015082A /* CapturePreview.swift */; };
 		C4B0DAC0276BA4B50015082A /* CaptureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B0DABD276BA4B50015082A /* CaptureEngine.swift */; };
 		C4EB90D428108656006A595C /* ConfigurationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4EB90D328108656006A595C /* ConfigurationView.swift */; };
+		CE2AA95728E8BA6C0016ECC7 /* KeyboardMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE2AA95628E8BA6C0016ECC7 /* KeyboardMonitor.swift */; };
+		CE68601B28D7E8CB00518B1A /* CircularBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE68601A28D7E8CB00518B1A /* CircularBuffer.swift */; };
+		CE9A3A992C2A5D6D0085C241 /* VideoToolboxPlus.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEE7B61D28E0055200133283 /* VideoToolboxPlus.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		122776EC2A82BC6F0083737C /* PickerSettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PickerSettingsView.swift; sourceTree = "<group>"; };
-		7C6C99F1D4B6E3EBA3A7B7DF /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; path = LICENSE.txt; sourceTree = "<group>"; };
+		7C6C99F1D4B6E3EBA3A7B7DF /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = LICENSE.txt; sourceTree = "<group>"; };
 		8D89E0E7125AFE6B4E2E6500 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
-		9AEEB9169F5D7FC75E6B35A2 /* SampleCode.xcconfig */ = {isa = PBXFileReference; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
+		9AEEB9169F5D7FC75E6B35A2 /* SampleCode.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
 		C44093722816EC8800FB8386 /* Synth.aif */ = {isa = PBXFileReference; lastKnownFileType = file; path = Synth.aif; sourceTree = "<group>"; };
 		C44093742816EC9C00FB8386 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
 		C470F0802811C5CB00D29309 /* ScreenRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecorder.swift; sourceTree = "<group>"; };
@@ -43,6 +46,9 @@
 		C4B0DABC276BA4B50015082A /* CapturePreview.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CapturePreview.swift; sourceTree = "<group>"; };
 		C4B0DABD276BA4B50015082A /* CaptureEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CaptureEngine.swift; sourceTree = "<group>"; };
 		C4EB90D328108656006A595C /* ConfigurationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationView.swift; sourceTree = "<group>"; };
+		CE2AA95628E8BA6C0016ECC7 /* KeyboardMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardMonitor.swift; sourceTree = "<group>"; };
+		CE68601A28D7E8CB00518B1A /* CircularBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CircularBuffer.swift; sourceTree = "<group>"; };
+		CEE7B61D28E0055200133283 /* VideoToolboxPlus.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VideoToolboxPlus.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,7 +67,6 @@
 			children = (
 				7C6C99F1D4B6E3EBA3A7B7DF /* LICENSE.txt */,
 			);
-			name = LICENSE;
 			path = LICENSE;
 			sourceTree = "<group>";
 		};
@@ -112,6 +117,9 @@
 				C471DFF92809F440001D24C9 /* PowerMeter.swift */,
 				C44093742816EC9C00FB8386 /* AudioPlayer.swift */,
 				C4B0DABB276BA4B50015082A /* ContentView.swift */,
+				CE68601A28D7E8CB00518B1A /* CircularBuffer.swift */,
+				CE2AA95628E8BA6C0016ECC7 /* KeyboardMonitor.swift */,
+				CEE7B61D28E0055200133283 /* VideoToolboxPlus.swift */,
 				C41D1B1D2814BD230033613F /* Views */,
 				C4B0DAB9276BA49F0015082A /* PerfectTypistApp.swift */,
 				C44093712816EC7800FB8386 /* Audio */,
@@ -216,7 +224,10 @@
 				C44093752816EC9C00FB8386 /* AudioPlayer.swift in Sources */,
 				C470F0812811C5CB00D29309 /* ScreenRecorder.swift in Sources */,
 				C4B0DABA276BA49F0015082A /* PerfectTypistApp.swift in Sources */,
+				CE9A3A992C2A5D6D0085C241 /* VideoToolboxPlus.swift in Sources */,
 				C471DFFE280A0968001D24C9 /* AudioLevelsView.swift in Sources */,
+				CE2AA95728E8BA6C0016ECC7 /* KeyboardMonitor.swift in Sources */,
+				CE68601B28D7E8CB00518B1A /* CircularBuffer.swift in Sources */,
 				122776ED2A82BC6F0083737C /* PickerSettingsView.swift in Sources */,
 				C4EB90D428108656006A595C /* ConfigurationView.swift in Sources */,
 				C4729DA52821BFAD00AAC477 /* MaterialView.swift in Sources */,

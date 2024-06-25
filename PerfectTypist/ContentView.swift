@@ -14,8 +14,9 @@ struct ContentView: View {
     
     @State var userStopped = false
     @State var disableInput = false
-    @State var isUnauthorized = false
-    
+    @State var isScreenRecordingUnauthorized = false
+	@State var isKeyCaptureUnauthorized = false
+
     @StateObject var screenRecorder = ScreenRecorder()
     
     var body: some View {
@@ -37,31 +38,49 @@ struct ContentView: View {
                     }
                 }
         }
-        .overlay {
-            if isUnauthorized {
-                VStack() {
-                    Spacer()
-                    VStack {
-                        Text("No screen recording permission.")
-                            .font(.largeTitle)
-                            .padding(.top)
-                        Text("Open System Settings and go to Privacy & Security > Screen Recording to grant permission.")
-                            .font(.title2)
-                            .padding(.bottom)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .background(.red)
-                    
-                }
-            }
-        }
+		.overlay {
+			VStack(spacing: 0) {
+				Spacer()
+				if isScreenRecordingUnauthorized {
+					VStack {
+						Text("No screen recording permission.")
+							.font(.largeTitle)
+							.padding(.top)
+						Text("Open System Settings and go to Privacy & Security > [Screen Recording](x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture) to grant permission.")
+							.font(.title2)
+							.padding(.bottom)
+					}
+					.frame(maxWidth: .infinity)
+					.background(.red)
+				}
+				if isKeyCaptureUnauthorized {
+					VStack {
+						Text("No accessibility permission.")
+							.font(.largeTitle)
+							.padding(.top)
+						Text("Open System Settings and go to Privacy & Security > [Accessibility](x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility) to grant permission.")
+							.font(.title2)
+							.padding(.bottom)
+					}
+					.frame(maxWidth: .infinity)
+					.background(.orange)
+				}
+			}
+		}
         .navigationTitle("Screen Capture Sample")
         .onAppear {
             Task {
+				await screenRecorder.monitorAvailableContent()
+
+				let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString: true]
+				let processTrusted: Bool = AXIsProcessTrustedWithOptions(options as CFDictionary)
+				isKeyCaptureUnauthorized = !processTrusted
+
                 if await screenRecorder.canRecord {
-                    await screenRecorder.start()
+                    // DON'T START RECORDING AUTOMATICALLY. If we do, need to fix userRecording too.
+                   // await screenRecorder.start()
                 } else {
-                    isUnauthorized = true
+                    isScreenRecordingUnauthorized = true
                     disableInput = true
                 }
             }

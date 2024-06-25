@@ -12,12 +12,13 @@ import Combine
 
 /// A structure that contains the video data to render.
 struct CapturedFrame {
-    static let invalid = CapturedFrame(surface: nil, contentRect: .zero, contentScale: 0, scaleFactor: 0)
 
+    let sampleBuffer: CMSampleBuffer   // Apple sample code didn't include this, but we need this for writing
     let surface: IOSurface?
     let contentRect: CGRect
     let contentScale: CGFloat
     let scaleFactor: CGFloat
+    let displayTime: UInt64 // the mach absolute time when frame was displayed by the window server.
     var size: CGSize { contentRect.size }
 }
 
@@ -95,6 +96,14 @@ private class CaptureEngineStreamOutput: NSObject, SCStreamOutput, SCStreamDeleg
     }
     
     /// - Tag: DidOutputSampleBuffer
+    /// Similar to AVCaptureVideoDataOutputSampleBufferDelegate captureOutput:didOutputSampleBuffer:fromConnection:
+    /* Does this caveat apply?
+     Note: Because AVCaptureSession allocates and reuses the CMSampleBufferRef in a pool, you’d actually need to clone it before retaining it – otherwise you will run into memory management errors. For more info, see this StackOverflow thread. <https://stackoverflow.com/questions/38335365/pulling-data-from-a-cmsamplebuffer-in-order-to-create-a-deep-copy>
+
+     If we then take the frames stored in CircularBuffer and write it out to a video file, it would yield the expected results. However, you will notice that recording uses up a lot of memory resources – depending on your recording this could easy go into the gigabytes!
+     
+
+     */
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
         
         // Return early if the sample buffer is invalid.
@@ -138,13 +147,17 @@ private class CaptureEngineStreamOutput: NSObject, SCStreamOutput, SCStreamDeleg
         guard let contentRectDict = attachments[.contentRect],
               let contentRect = CGRect(dictionaryRepresentation: contentRectDict as! CFDictionary),
               let contentScale = attachments[.contentScale] as? CGFloat,
-              let scaleFactor = attachments[.scaleFactor] as? CGFloat else { return nil }
+              let scaleFactor = attachments[.scaleFactor] as? CGFloat,
+              let displayTime: UInt64 = attachments[.displayTime] as? UInt64
+        else { return nil }
         
         // Create a new frame with the relevant data.
-        let frame = CapturedFrame(surface: surface,
+        let frame = CapturedFrame(sampleBuffer: sampleBuffer,
+                                  surface: surface,
                                   contentRect: contentRect,
                                   contentScale: contentScale,
-                                  scaleFactor: scaleFactor)
+                                  scaleFactor: scaleFactor,
+                                  displayTime: displayTime)
         return frame
     }
     
